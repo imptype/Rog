@@ -42,7 +42,7 @@ app = Starlette(lifespan = lifespan)
 
 @app.route('/', methods = ['GET'])
 async def root():
-  return True
+  return PlainTextResponse(status_code = 200)
 
 cache = []
 lock = asyncio.Lock()
