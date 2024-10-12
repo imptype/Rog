@@ -1,2 +1,2 @@
-fastapi
-aiohttp
+fastapi==0.115.2
+aiohttp==3.10.10
