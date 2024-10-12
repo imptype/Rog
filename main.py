@@ -39,6 +39,7 @@ async def lifespan(a):
   await a.session.close()
   
 app = Starlette(lifespan = lifespan)
+started_at = datetime.datetime.now()
 
 @app.route('/', methods = ['GET'])
 async def root(request):
@@ -82,6 +83,7 @@ def format_seconds(seconds):
 
 @app.route('/log', methods = ['POST'])
 async def log(request):
+  print('start:', started_at)
   data = await request.json()
   print(json.dumps(data, indent = 4))
 
