@@ -41,7 +41,7 @@ async def lifespan(a):
 app = Starlette(lifespan = lifespan)
 
 @app.route('/', methods = ['GET'])
-async def root():
+async def root(request):
   return PlainTextResponse(status_code = 200)
 
 cache = []
