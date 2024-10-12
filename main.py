@@ -45,6 +45,15 @@ async def root(request):
   return PlainTextResponse(status_code = 200)
 
 cache = []
+async def send(embeds):
+  print('sending', len(embeds))
+  for i, embed in enumerate(embeds):
+    embed.url += '?' + str(i) # prevent embeds merging
+  await app.webhook.send(embeds = embeds)
+  for embed in embeds:
+    cache.remove(embed)
+  print('sent', len(embeds), 'remaining', len(cache))
+
 lock = asyncio.Lock()
 async def queue(embed):
   cache.append(embed)
@@ -55,22 +64,15 @@ async def queue(embed):
   await asyncio.sleep(5)
 
   async with lock:
-    print('got lock! this is cache', cache)
     if cache: # still has items
-      embeds_chunks = []
       embeds = []
       for i in list(cache):
         embeds.append(i)
-        cache.remove(i)
         if len(embeds) == 10:
-          embeds_chunks.append(embeds)
+          await send(embeds)
           embeds = []
       if embeds:
-        embeds_chunks.append(embeds)
-      for embeds in embeds_chunks:
-        for i, embed in enumerate(embeds):
-          embed.url += '?' + str(i) # prevent embeds merging
-        await app.webhook.send(embeds = embeds)
+        await send(embeds)
 
 def format_seconds(seconds):
   minutes, seconds = divmod(seconds, 60)
@@ -119,6 +121,6 @@ async def log(request):
       if result['data']:
         embed.set_thumbnail(url = result['data'][0]['imageUrl'])
 
-  asyncio.create_task(queue(embed)) # custom vercel runtime required if we do this
+  await queue(embed)
 
   return PlainTextResponse(status_code = 200)
