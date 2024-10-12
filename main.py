@@ -19,7 +19,8 @@ import datetime
 import contextlib
 import aiohttp
 import discord
-from fastapi import FastAPI, Request
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
 
 webhook_url = os.getenv('url')
 
@@ -37,9 +38,9 @@ async def lifespan(a):
     print('Ignoring cancelled error. (CTRL+C)')
   await a.session.close()
   
-app = FastAPI(lifespan = lifespan)
+app = Starlette(lifespan = lifespan)
 
-@app.get('/')
+@app.route('/', methods = ['GET'])
 async def root():
   return True
 
@@ -77,8 +78,8 @@ def format_seconds(seconds):
     return '{}min, {}s'.format(minutes, seconds)
   return '{}s'.format(seconds)
 
-@app.post('/log')
-async def log(request : Request):
+@app.route('/log', methods = ['POST'])
+async def log(request):
   data = await request.json()
   print(json.dumps(data, indent = 4))
 
@@ -116,8 +117,8 @@ async def log(request : Request):
     if resp.status == 200:
       result = await resp.json()
       if result['data']:
-        embed.set_thumbnail(url = (respData)['data'][0]['imageUrl'])
+        embed.set_thumbnail(url = result['data'][0]['imageUrl'])
 
   asyncio.create_task(queue(embed)) # custom vercel runtime required if we do this
 
-  return 200
+  return PlainTextResponse(status_code = 200)
