@@ -19,62 +19,64 @@ import datetime
 import contextlib
 import aiohttp
 import discord
+import redis.asyncio as redis
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 
-webhook_url = os.getenv('url')
+USER_BASE = 'https://www.roblox.com/users/'
+THUMBNAIL_BASE = 'https://thumbnails.roblox.com/v1/users/avatar?&size=720x720&format=Png&userIds='
 
-user_base = 'https://www.roblox.com/users/'
-thumbnail_base = 'https://thumbnails.roblox.com/v1/users/avatar?&size=720x720&format=Png&userIds='
+REDIS_CACHE_KEY = 'embed_cache'
+REDIS_LOCK_KEY = 'webhook_lock'
 
 # Lifespan to attach .session attribute, cancel + shutdown is for local testing
 @contextlib.asynccontextmanager
 async def lifespan(a):
   a.session = aiohttp.ClientSession()
-  a.webhook = discord.Webhook.from_url(webhook_url, session = a.session)
+  a.webhook = discord.Webhook.from_url(os.getenv('url'), session = a.session)
+
+  if a.test:
+    redis_url = 'redis://localhost:6379'
+  else:
+    redis_url = os.getenv('KV_URL')
+  a.redis = await redis.from_url(redis_url, decode_responses = True)
+  
+  a.lock = a.redis.lock(REDIS_LOCK_KEY)
   try:
     yield
   except asyncio.CancelledError:
     print('Ignoring cancelled error. (CTRL+C)')
   await a.session.close()
-  
+
 app = Starlette(lifespan = lifespan)
-started_at = datetime.datetime.now()
+app.test = os.getenv('test')
+app.started_at = datetime.datetime.now()
 
 @app.route('/', methods = ['GET'])
 async def root(request):
   return PlainTextResponse(status_code = 200)
 
-cache = []
 async def send(embeds):
+  embeds = [discord.Embed.from_dict(json.loads(i)) for i in embeds]
   print('sending', len(embeds))
   for i, embed in enumerate(embeds):
     embed.url += '?' + str(i) # prevent embeds merging
   await app.webhook.send(embeds = embeds)
-  for embed in embeds:
-    cache.remove(embed)
-  print('sent', len(embeds), 'remaining', len(cache))
+  await app.redis.ltrim(REDIS_CACHE_KEY, len(embeds), -1)
+  print('sent', len(embeds), 'remaining', await app.redis.llen(REDIS_CACHE_KEY))
 
-lock = asyncio.Lock()
 async def queue(embed):
-  cache.append(embed)
+  await app.redis.rpush(REDIS_CACHE_KEY, json.dumps(embed.to_dict()))
 
   # 5 second delay to ensure at least 5 seconds worth of stacked embeds
   # supports a rate of at most about ~10 joinleave/sec = maybe 5k concurrent players?
   # more than 50embeds/5s would require multiple webhooks
   await asyncio.sleep(5)
 
-  async with lock:
-    if cache: # still has items
-      embeds = []
-      for i in list(cache):
-        embeds.append(i)
-        if len(embeds) == 10:
-          await send(embeds)
-          embeds = []
-      if embeds:
-        await send(embeds)
-
+  async with app.lock:
+    while embeds := await app.redis.lrange(REDIS_CACHE_KEY, 0, 9):
+      await send(embeds) # send in chunks of 10
+  
 def format_seconds(seconds):
   minutes, seconds = divmod(seconds, 60)
   if minutes > 0:
@@ -83,7 +85,7 @@ def format_seconds(seconds):
 
 @app.route('/log', methods = ['POST'])
 async def log(request):
-  print('start:', started_at)
+  print('start:', app.started_at)
   data = await request.json()
   print(json.dumps(data, indent = 4))
 
@@ -108,16 +110,16 @@ async def log(request):
     ]
 
   embed = discord.Embed(
-    url = user_base + str(data['userId']),
+    url = USER_BASE + str(data['userId']),
     title = data['username'] + ' ' + action + ' | SPC: ' + str(data['playerCount']),
     color = color
   )
   for name, value in fields:
     embed.add_field(name = name, value = value, inline = True)
-  embed.set_footer(text = str(datetime.datetime.now()))
+  embed.set_footer(text = str(datetime.datetime.fromtimestamp(data['now'] / 1000))[:-3])
   embed.set_author(name = data['serverType'] + ' ' + data['serverId'])
 
-  async with app.session.get(thumbnail_base + str(data['userId'])) as resp:
+  async with app.session.get(THUMBNAIL_BASE + str(data['userId'])) as resp:
     if resp.status == 200:
       result = await resp.json()
       if result['data']:
