@@ -83,7 +83,7 @@ async def queue(embed):
   # 5 second delay to ensure at least 5 seconds worth of stacked embeds
   # supports a rate of at most about ~10 joinleave/sec = maybe 5k concurrent players?
   # more than 50embeds/5s would require multiple webhooks
-  await asyncio.sleep(5)
+  # await asyncio.sleep(5)
 
   async with app.lock:
     while embeds := await app.redis.lrange(REDIS_CACHE_KEY, 0, 9):
