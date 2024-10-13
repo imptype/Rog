@@ -36,24 +36,13 @@ async def lifespan(a):
   a.session = aiohttp.ClientSession()
   a.webhook = discord.Webhook.from_url(os.getenv('url'), session = a.session)
 
-  if a.test:
-    a.redis = redis.Redis(
-      host = 'localhost',
-      port = 6379,
-      decode_responses = True
-    )
+  if app.test:
+    redis_url = 'redis://localhost:6379?decode_responses=True'
   else:
-    parts = urlparse(os.getenv('KV_URL'))
-    a.redis = await redis.Redis(
-      host = parts.hostname,
-      port = parts.port,
-      username = parts.username,
-      password = parts.password,
-      ssl = True,
-      decode_responses = True
-    )
-    
-  a.lock = a.redis.lock(REDIS_LOCK_KEY)
+    redis_url = os.getenv('KV_URL')
+  a.redis = await redis.from_url(redis_url)
+
+  a.lock = a.redis.lock(REDIS_LOCK_KEY, timeout = 10)
   try:
     yield
   except asyncio.CancelledError:
@@ -80,15 +69,22 @@ async def send(embeds):
 async def queue(embed):
   await app.redis.rpush(REDIS_CACHE_KEY, json.dumps(embed.to_dict()))
 
-  # 5 second delay to ensure at least 5 seconds worth of stacked embeds
   # supports a rate of at most about ~10 joinleave/sec = maybe 5k concurrent players?
   # more than 50embeds/5s would require multiple webhooks
-  # await asyncio.sleep(5)
+  # if it doesn't finish the first time, the next request will do it
+  # to avoid 504 resends and getting duplicates, we gotta return 200 within 10 seconds
+  # ensures at least 2 seconds worth of stacked embeds
+  await asyncio.sleep(2)
 
-  async with app.lock:
-    while embeds := await app.redis.lrange(REDIS_CACHE_KEY, 0, 9):
-      await send(embeds) # send in chunks of 10
-  
+  if await app.lock.acquire(blocking_timeout = 7):
+    try:
+      while embeds := await app.redis.lrange(REDIS_CACHE_KEY, 0, 9):
+        await send(embeds) # send in chunks of 10
+    finally:
+      await app.lock.release()
+  else:
+    print('acquire timed out')
+
 def format_seconds(seconds):
   minutes, seconds = divmod(seconds, 60)
   if minutes > 0:
@@ -137,8 +133,6 @@ async def log(request):
       if result['data']:
         embed.set_thumbnail(url = result['data'][0]['imageUrl'])
 
-  # to avoid resends and getting duplicates, we gotta return 200 immediately
-  # if it doesn't finish the first time, the next request will do it
-  asyncio.create_task(queue(embed))
+  await queue(embed)
 
   return PlainTextResponse(status_code = 200)
