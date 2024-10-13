@@ -36,11 +36,18 @@ async def lifespan(a):
   a.session = aiohttp.ClientSession()
   a.webhook = discord.Webhook.from_url(os.getenv('url'), session = a.session)
 
-  if app.test:
-    redis_url = 'redis://localhost:6379?decode_responses=True'
+  if a.test:
+    a.redis = await redis.from_url('redis://localhost:6379?decode_responses=True')
   else:
-    redis_url = os.getenv('KV_URL')
-  a.redis = await redis.from_url(redis_url)
+    parts = urlparse(os.getenv('KV_URL'))
+    a.redis = await redis.Redis(
+      host = parts.hostname,
+      port = parts.port,
+      username = parts.username,
+      password = parts.password,
+      ssl = True,
+      decode_responses = True
+    )
 
   a.lock = a.redis.lock(REDIS_LOCK_KEY, timeout = 10)
   try:
