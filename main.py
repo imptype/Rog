@@ -17,6 +17,7 @@ Route.BASE = 'https://discordapp.com/api/v9' # < 10
 import asyncio
 import datetime
 import contextlib
+from urllib.parse import urlparse
 import aiohttp
 import discord
 import redis.asyncio as redis
@@ -36,11 +37,22 @@ async def lifespan(a):
   a.webhook = discord.Webhook.from_url(os.getenv('url'), session = a.session)
 
   if a.test:
-    redis_url = 'redis://localhost:6379'
+    a.redis = redis.Redis(
+      host = 'localhost',
+      port = 6379,
+      decode_responses = True
+    )
   else:
-    redis_url = os.getenv('KV_URL')
-  a.redis = await redis.from_url(redis_url, decode_responses = True)
-  
+    parts = urlparse(os.getenv('KV_URL'))
+    a.redis = await redis.Redis(
+      host = parts.hostname,
+      port = parts.port,
+      username = parts.username,
+      password = parts.password,
+      ssl = True,
+      decode_responses = True
+    )
+    
   a.lock = a.redis.lock(REDIS_LOCK_KEY)
   try:
     yield
@@ -125,6 +137,8 @@ async def log(request):
       if result['data']:
         embed.set_thumbnail(url = result['data'][0]['imageUrl'])
 
-  await queue(embed)
+  # to avoid resends and getting duplicates, we gotta return 200 immediately
+  # if it doesn't finish the first time, the next request will do it
+  asyncio.create_task(queue(embed))
 
   return PlainTextResponse(status_code = 200)
