@@ -36,7 +36,8 @@ local function request(player, extra)
 		serverId = game.JobId,
 		serverType = getServerType(),
 		serverAge = os.time() - serverCreatedAt,
-		playerCount = #game.Players:GetPlayers()
+		playerCount = #game.Players:GetPlayers(),
+		now = DateTime.now().UnixTimestampMillis
 	}
 	for k, v in pairs(extra) do
 		payload[k] = v
@@ -75,6 +76,12 @@ Players.PlayerRemoving:Connect(function(player)
 		totalSeconds = os.time() - playerJoinedAt[player.UserId],
 		usedFeature = shared[player]
 	}
-	playerJoinedAt[player.UserId] = nil
 	request(player, extra)
+	playerJoinedAt[player.UserId] = nil
+end)
+
+game:BindToClose(function() -- ensure last job finishes
+	while next(playerJoinedAt) do
+		task.wait(0.1)
+	end
 end)
