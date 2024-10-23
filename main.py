@@ -1,3 +1,11 @@
+"""
+supports a rate of at most about ~10 joinleave/sec = maybe 5k concurrent players?
+more than 50embeds/5s would require multiple webhooks
+if it doesn't finish the first time, the next request will do it
+to avoid 504 resends and getting duplicates, we gotta return 200 within 10 seconds
+ensures at least 2 seconds worth of stacked embeds
+"""
+
 import os
 import json
 
@@ -27,14 +35,17 @@ from starlette.responses import PlainTextResponse
 USER_BASE = 'https://www.roblox.com/users/'
 THUMBNAIL_BASE = 'https://thumbnails.roblox.com/v1/users/avatar?&size=720x720&format=Png&userIds='
 
-REDIS_CACHE_KEY = 'embed_cache'
-REDIS_LOCK_KEY = 'webhook_lock'
+REDIS_DOOR_CACHE_KEY = 'door_embed_cache'
+REDIS_DOOR_LOCK_KEY = 'door_webhook_lock'
+REDIS_TEXT_CACHE_KEY = 'text_embed_cache'
+REDIS_TEXT_LOCK_KEY = 'text_webhook_lock'
 
 # Lifespan to attach .session attribute, cancel + shutdown is for local testing
 @contextlib.asynccontextmanager
 async def lifespan(a):
   a.session = aiohttp.ClientSession()
   a.webhook = discord.Webhook.from_url(os.getenv('url'), session = a.session)
+  a.webhook2 = discord.Webhook.from_url(os.getenv('url2'), session = a.session)
 
   if a.test:
     a.redis = await redis.from_url('redis://localhost:6379?decode_responses=True')
@@ -49,7 +60,8 @@ async def lifespan(a):
       decode_responses = True
     )
 
-  a.lock = a.redis.lock(REDIS_LOCK_KEY, timeout = 10)
+  a.lock = a.redis.lock(REDIS_DOOR_LOCK_KEY, timeout = 10)
+  a.lock2 = a.redis.lock(REDIS_TEXT_LOCK_KEY, timeout = 10)
   try:
     yield
   except asyncio.CancelledError:
@@ -64,34 +76,6 @@ app.started_at = datetime.datetime.now()
 async def root(request):
   return PlainTextResponse(status_code = 200)
 
-async def send(embeds):
-  embeds = [discord.Embed.from_dict(json.loads(i)) for i in embeds]
-  print('sending', len(embeds))
-  for i, embed in enumerate(embeds):
-    embed.url += '?' + str(i) # prevent embeds merging
-  await app.webhook.send(embeds = embeds)
-  await app.redis.ltrim(REDIS_CACHE_KEY, len(embeds), -1)
-  print('sent', len(embeds), 'remaining', await app.redis.llen(REDIS_CACHE_KEY))
-
-async def queue(embed):
-  await app.redis.rpush(REDIS_CACHE_KEY, json.dumps(embed.to_dict()))
-
-  # supports a rate of at most about ~10 joinleave/sec = maybe 5k concurrent players?
-  # more than 50embeds/5s would require multiple webhooks
-  # if it doesn't finish the first time, the next request will do it
-  # to avoid 504 resends and getting duplicates, we gotta return 200 within 10 seconds
-  # ensures at least 2 seconds worth of stacked embeds
-  await asyncio.sleep(2)
-
-  if await app.lock.acquire(blocking_timeout = 7):
-    try:
-      while embeds := await app.redis.lrange(REDIS_CACHE_KEY, 0, 9):
-        await send(embeds) # send in chunks of 10
-    finally:
-      await app.lock.release()
-  else:
-    print('acquire timed out')
-
 def format_seconds(seconds):
   minutes, seconds = divmod(seconds, 60)
   if minutes > 0:
@@ -100,6 +84,7 @@ def format_seconds(seconds):
 
 @app.route('/log', methods = ['POST'])
 async def log(request):
+
   print('start:', app.started_at)
   data = await request.json()
   print(json.dumps(data, indent = 4))
@@ -131,8 +116,8 @@ async def log(request):
   )
   for name, value in fields:
     embed.add_field(name = name, value = value, inline = True)
-  embed.set_footer(text = str(datetime.datetime.fromtimestamp(data['now'] / 1000))[:-3])
   embed.set_author(name = data['serverType'] + ' ' + data['serverId'])
+  embed.set_footer(text = str(datetime.datetime.fromtimestamp(data['now'] / 1000))[:-3])
 
   async with app.session.get(THUMBNAIL_BASE + str(data['userId'])) as resp:
     if resp.status == 200:
@@ -140,6 +125,55 @@ async def log(request):
       if result['data']:
         embed.set_thumbnail(url = result['data'][0]['imageUrl'])
 
-  await queue(embed)
+  await app.redis.rpush(REDIS_DOOR_CACHE_KEY, json.dumps(embed.to_dict()))
+
+  await asyncio.sleep(2)
+
+  if await app.lock.acquire(blocking_timeout = 7):
+    try:
+      while embeds := await app.redis.lrange(REDIS_DOOR_CACHE_KEY, 0, 9):
+        embeds = [discord.Embed.from_dict(json.loads(i)) for i in embeds]
+        print('sending', len(embeds))
+        for i, embed in enumerate(embeds):
+          embed.url += '?' + str(i) # prevent embeds merging
+        await app.webhook.send(embeds = embeds)
+        await app.redis.ltrim(REDIS_DOOR_CACHE_KEY, len(embeds), -1)
+        print('sent', len(embeds), 'remaining', await app.redis.llen(REDIS_DOOR_CACHE_KEY))
+    finally:
+      await app.lock.release()
+  else:
+    print('acquire timed out')
+
+  return PlainTextResponse(status_code = 200)
+
+@app.route('/logc', methods = ['POST'])
+async def logc(request):
+
+  print('logc start:', app.started_at)
+  data = await request.json()
+  print(data)
+
+  embed = discord.Embed(
+    title = 'TC: {} ({}) | SPC: {} | Age: {}'.format(data['textCount'], len(data['text']), data['playerCount'], format_seconds(data['serverAge'])),
+    description = '```fix\n{}```'.format(data['text']),
+    color = discord.Color.blue()
+  )
+  embed.set_author(name = data['serverType'] + ' ' + data['serverId'])
+  embed.set_footer(text = str(datetime.datetime.fromtimestamp(data['now'] / 1000))[:-3])
+
+  await app.redis.rpush(REDIS_TEXT_CACHE_KEY, json.dumps(embed.to_dict()))
+
+  await asyncio.sleep(2)
+
+  if await app.lock2.acquire(blocking_timeout = 7):
+    try:
+      while embed_data := await app.redis.lindex(REDIS_TEXT_CACHE_KEY, 0):
+        embed = discord.Embed.from_dict(json.loads(embed_data))
+        await app.webhook2.send(embed = embed)
+        await app.redis.lpop(REDIS_TEXT_CACHE_KEY)
+    finally:
+      await app.lock2.release()
+  else:
+    print('acquire timed out')
 
   return PlainTextResponse(status_code = 200)
