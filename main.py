@@ -50,13 +50,13 @@ async def lifespan(a):
   if a.test:
     a.redis = await redis.from_url('redis://localhost:6379?decode_responses=True')
   else:
-    parts = urlparse(os.getenv('KV_URL'))
+    parts = urlparse(os.getenv('REDIS_URL'))
     a.redis = await redis.Redis(
       host = parts.hostname,
       port = parts.port,
       username = parts.username,
       password = parts.password,
-      ssl = True,
+      # ssl = True,
       decode_responses = True
     )
 
