@@ -94,7 +94,7 @@ async def log(request):
     color = discord.Color.red()
     fields = [
       ('Total Seconds', format_seconds(seconds)),
-      ('Used Feature', str(data['usedFeature'])),
+      ('Click Count', str(data['clickCount'])),
       ('Server Age', format_seconds(data['serverAge']))
     ]
   else:
