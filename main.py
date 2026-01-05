@@ -111,9 +111,11 @@ async def log(request):
 
   embed = discord.Embed(
     url = USER_BASE + str(data['userId']),
-    title = data['username'] + ' ' + action + ' | SPC: ' + str(data['playerCount']),
+    title = data['username'] + ' ' + action + ' | PC: ' + str(data['playerCount']),
     color = color
   )
+  if 'text' in data:
+    embed.description = data['text']
   for name, value in fields:
     embed.add_field(name = name, value = value, inline = True)
   embed.set_author(name = data['serverType'] + ' ' + data['serverId'])
@@ -154,7 +156,7 @@ async def logc(request):
   print(data)
 
   embed = discord.Embed(
-    title = 'TC: {} ({}) | SPC: {} | Age: {}'.format(data['textCount'], len(data['text']), data['playerCount'], format_seconds(data['serverAge'])),
+    title = 'TC: {} ({}) | PC: {} | Age: {}'.format(data['textCount'], len(data['text']), data['playerCount'], format_seconds(data['serverAge'])),
     description = '```fix\n{}```'.format(data['text']),
     color = discord.Color.blue()
   )
